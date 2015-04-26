@@ -1,0 +1,146 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Matt R"
+date: "April 25, 2015"
+output: html_document
+---
+
+### Summary
+
+summary
+
+### Load data
+
+Load the libraries we'll use, and set a seed so we can replicate results:
+
+```{r}
+library(caret)
+library(RCurl)
+library(ggplot2)
+options(warn=-1)
+set.seed(98765432)
+```
+
+We grab the data from the urls, and ensure that numeric columns are numeric (applying the same transformations to the test as to the training data):
+
+```{r cache=TRUE}
+pmltrainingraw <- getURL("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+pmltestingraw <- getURL("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+
+```{r cache=TRUE, echo=FALSE}
+pmltraining <- read.csv(text=pmltrainingraw, na.strings=c("#DIV/0!"))
+pmltesting <- read.csv(text=pmltestingraw, na.strings=c("#DIV/0!"))
+
+for(i in 7:ncol(pmltraining) - 1) {pmltraining[,i] <- as.numeric(as.character(pmltraining[,i]))}
+for(i in 7:ncol(pmltesting)) {pmltesting[,i] <- as.numeric(as.character(pmltesting[,i]))}
+```
+
+### Exploratory Analysis
+
+Some of the columns in the training dataset describe the observation rather than quantify it, so we remove them:
+
+```{r}
+pmltraining <- pmltraining[,-c(1:7)]
+pmltesting <- pmltesting[,-c(1:7)]
+```
+
+Some of the columns were also primarily NA's, or even all NA's.  Here we list those with greater than 95% na's:
+
+```{r}
+nasizes <- data.frame()
+for (i in 1:ncol(pmltraining)) {
+    newrow <- data.frame(
+        col = colnames(pmltraining)[i],
+        nas = sum(is.na(pmltraining[colnames(pmltraining)[i]]))
+        )
+    nasizes <- rbind(nasizes, newrow)
+}
+nasizes$percent <- nasizes$nas / nrow(pmltraining)
+
+high_nas <- as.character(nasizes[nasizes$percent > 0.95,]$col)
+head(high_nas)
+```
+
+We plotted the effect of each of those columns who had at least a few non-na values and determined that none had a noticable trend that could be influential in our model.  Here's an illustration of a one:
+
+```{r}
+col <- high_nas[20]
+datatoplot <- pmltraining[!is.na(pmltraining[col]),]
+datatoplot$X <- 1:nrow(datatoplot)
+g <- ggplot(datatoplot, aes_string(x="X", y=col)) +
+    geom_point(aes(color = classe)) +
+    labs(title=col)
+print(g)
+```
+
+So we decided to remove those columns.
+
+```{r}
+pmltraining <- pmltraining[,!(names(pmltraining) %in% high_nas)]
+pmltesting <- pmltesting[,!(names(pmltesting) %in% high_nas)]
+```
+
+### Model Fitting
+
+Now we'll split the given training set into our own training and test sets for cross-validation purposes:
+
+```{r cache=TRUE}
+inTrain <- createDataPartition(pmltraining$classe, p = 0.70, list=FALSE)
+training <- pmltraining[inTrain,]
+testing <- pmltraining[-inTrain,]
+```
+
+We'll try a tree model and random forests model, and choose the one that works better.  First, we train a tree model and output the in-sample confusion matrix to analyze performance:
+
+```{r cache=TRUE}
+treefit <- train(classe ~ .,data=training, method="rpart")
+treeinsampleprediction <- predict(treefit, newdata=training)
+confusionMatrix(treeinsampleprediction, training$classe)
+```
+
+Doesn't look that great.  Next we'll look at random forest, setting the training method to cross validation with a number of folds set to 10 so we can expect low variance in the cross validation error:
+
+```{r cache=TRUE}
+rffit <- train(classe ~ ., data=training,
+               method = "rf",
+               trControl = trainControl(method="cv", number=5))
+rfinsampleprediction <- predict(rffit, newdata=training)
+confusionMatrix(rfinsampleprediction, training$classe)
+```
+
+This model performs much better, accurately classifying all of training data.  Let's look at the cross-validation error:
+
+```{r}
+rffit
+```
+
+The cross-validation out of bag error is 0.79344%, which we can use as an estimate of our out-of-sample error.
+
+### Final Model Testing
+
+We now run our model against the testing data we set aside, and check the confusion matrix to see how well it performed:
+
+```{r}
+testprediction <- predict(rffit, newdata=testing)
+confusionMatrix(testprediction, testing$classe)
+```
+
+We accurately classified 99.37% of the testing data, which is excellent performance, putting our out-of-sample error rate at 0.63%.  This is an expected value considering our cross validation error rate was 0.79344%.
+
+### Application to test cases
+
+We create a list of predictions for the assignment's test data and used the code given in the assignment to generate predictions files for the test data (intentionally not outputting here):
+
+```{r}
+assignmentprediction <- predict(rffit, newdata=pmltesting)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(assignmentprediction)
+```
+
